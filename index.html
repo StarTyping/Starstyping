@@ -593,6 +593,27 @@ input:focus,select:focus{border-color:var(--gold);box-shadow:0 0 0 3px rgba(201,
   </div>
 </div>
 
+<!-- IMPORT REVIEW MODAL -->
+<div style="position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:600;display:none;align-items:center;justify-content:center;padding:20px" id="import-review-modal">
+  <div style="background:#fff;border-radius:16px;padding:26px;width:100%;max-width:1100px;max-height:92vh;overflow-y:auto;direction:rtl">
+    <div style="font-size:18px;font-weight:800;color:var(--navy);margin-bottom:6px;padding-bottom:12px;border-bottom:2px solid var(--gold);display:flex;align-items:center;gap:8px">
+      🔍 <span>مراجعة البيانات قبل الحفظ</span>
+    </div>
+    <p style="font-size:12.5px;color:var(--muted);margin:10px 0 14px">راجعي البيانات كويس قبل التأكيد. السجلات "مكررة" أو "ناقصة" لن تُحفظ تلقائياً. لن يتم حفظ أي شيء على السيرفر إلا بعد الضغط على "✅ تأكيد الحفظ".</p>
+    <div id="import-review-summary" style="margin-bottom:14px;display:flex;gap:8px;flex-wrap:wrap"></div>
+    <div class="table-wrap" style="max-height:50vh;overflow-y:auto">
+      <table>
+        <thead id="import-review-thead"></thead>
+        <tbody id="import-review-tbody"></tbody>
+      </table>
+    </div>
+    <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:18px">
+      <button class="btn btn-outline" onclick="closeImportReview()">❌ إلغاء — لا تحفظ شيء</button>
+      <button class="btn" style="background:#2D6A4F;color:#fff" onclick="confirmImportSave()">✅ تأكيد الحفظ على السيرفر</button>
+    </div>
+  </div>
+</div>
+
 <script>
 // ===== SUPABASE =====
 const SB_URL='https://ouuigohuhrhcinqgrcnf.supabase.co';
@@ -1117,102 +1138,157 @@ function createInvoiceFromPending(pid){
 }
 
 // ===== IMPORT =====
+// ===== IMPORT REVIEW STATE =====
+let pendingImportRows=[],pendingImportType=null;
+
 function handleImport(input,type){
   const file=input.files[0];if(!file)return;
   const reader=new FileReader();
-  reader.onload=async e=>{
+  reader.onload=e=>{
     try{
       const wb=XLSX.read(e.target.result,{type:'array'});
       const ws=wb.Sheets[wb.SheetNames[0]];
       const rows=XLSX.utils.sheet_to_json(ws,{defval:''});
-      setSyncing(true);
-      let imported=0,skipped=0,failed=0;
-      if(type==='staff'){
-        // Build a set of existing (company+name+passport) to avoid duplicates
-        const existingKeys=new Set(staffData.map(s=>(s.company||'').trim().toLowerCase()+'|'+(s.name||'').trim().toLowerCase()+'|'+(s.passport_no||'').trim().toLowerCase()));
-        // Build a normalized-name -> canonical-name map from existing companies & staff
-        const knownNamesMap=new Map();
-        companiesData.forEach(c=>{if(c.name)knownNamesMap.set(normCo(c.name),c.name)});
-        staffData.forEach(s=>{if(s.company&&!knownNamesMap.has(normCo(s.company)))knownNamesMap.set(normCo(s.company),s.company)});
-        for(const row of rows){
-          let rawCompany=row['Company Name']||row['الشركة']||row['02-Company']||row['company']||'';
-          const resolvedCompany=resolveCompanyName(rawCompany,knownNamesMap);
-          if(rawCompany&&!knownNamesMap.has(normCo(rawCompany)))knownNamesMap.set(normCo(rawCompany),resolvedCompany);
-          const s={
-            no:staffData.length+1+imported,
-            company:resolvedCompany,
-            name:row['Person Name']||row['الاسم']||row['03-Person Name']||row['name']||'',
-            nationality:row['Nat.']||row['الجنسية']||row['04-Nat.']||'',
-            nat_no:String(row['Nat.-No.']||''),
-            passport_no:row['Passport No.']||row['رقم الجواز']||row['06-Passport No.']||'',
-            passport_issue:fmtED(row['Passport Issues.']||row['07-Passport Issues.']),
-            passport_exp:fmtED(row['Passport Exp.']||row['انتهاء الجواز']||row['08-Passport Exp.']),
-            dob:fmtED(row['DOB']||row['09-D-M-Y']),
-            mol_no:row['MBxxxxxxAE']||row['رقم MOL']||row['10-MBxxxxxxAE']||'',
-            personal_no:String(row['Personal No.']||row['11-Personal No.']||''),
-            uid_no:String(row['UID Number']||row['12-UID Number']||''),
-            emirates_id:String(row['Emirates ID']||row['13-Emirates ID']||''),
-            eid_card:String(row['EID - Card No.']||row['14-EID - Card No.']||''),
-            lc_no:String(row['LC No.-1']||row['رقم بطاقة العمل']||row['15-LC No.-1']||''),
-            lc_exp:fmtED(row['LC Exp.-1']||row['انتهاء بطاقة العمل']||row['16-LC Exp.-1']),
-            visa_exp:fmtED(row['Visa Exp.']||row['انتهاء الإقامة']||row['17-Visa Exp.']),
-            iloe_exp:fmtED(row['ILOE']||row['انتهاء تأمين التعطل']||row['18-ILOE'])
-          };
-          if(!s.name||!s.company){skipped++;continue}
-          const key=s.company.trim().toLowerCase()+'|'+s.name.trim().toLowerCase()+'|'+(s.passport_no||'').trim().toLowerCase();
-          if(existingKeys.has(key)){skipped++;continue}
-          try{
-            const r=await sb('hr_staff','POST',s);
-            staffData.push(r[0]||r);
-            existingKeys.add(key);
-            imported++;
-          }catch(rowErr){failed++}
-        }
-        // Auto-create any companies mentioned in the staff file but not yet registered
-        const existingCoNorms=new Set(companiesData.map(c=>normCo(c.name)));
-        const newCos=[...new Set(staffData.map(s=>s.company).filter(Boolean))].filter(n=>!existingCoNorms.has(normCo(n)));
-        for(const coName of newCos){
-          try{
-            const r=await sb('hr_companies','POST',{name:coName,license_issue:null,license_exp:null,passport_card_exp:null,lease_exp:null,manager:'',phone:'',email:'',address:''});
-            companiesData.push(r[0]||r);
-            existingCoNorms.add(normCo(coName));
-          }catch(coErr){}
-        }
-        renderStaff();renderDashTable();renderKPIs();fillDropdowns();renderCompanies();
-      }else if(type==='companies'){
-        const existingNames=new Set(companiesData.map(c=>(c.name||'').trim().toLowerCase()));
-        for(const row of rows){
-          const c={
-            name:row['Company Name']||row['اسم الشركة']||row['name']||'',
-            license_issue:fmtED(row['إصدار الرخصة']||row['License Issue']),
-            license_exp:fmtED(row['انتهاء الرخصة']||row['License Exp']),
-            passport_card_exp:fmtED(row['انتهاء بطاقة الجوازات']||row['Passport Card Exp']),
-            lease_exp:fmtED(row['انتهاء عقد الإيجار']||row['Lease Exp']),
-            manager:row['المدير']||row['Manager']||'',
-            phone:row['التواصل']||row['Phone']||'',
-            email:row['الإيميل']||row['Email']||'',
-            address:row['العنوان']||row['Address']||''
-          };
-          if(!c.name){skipped++;continue}
-          const key=c.name.trim().toLowerCase();
-          if(existingNames.has(key)){skipped++;continue}
-          try{
-            const r=await sb('hr_companies','POST',c);
-            companiesData.push(r[0]||r);
-            existingNames.add(key);
-            imported++;
-          }catch(rowErr){failed++}
-        }
-        renderCompanies();fillDropdowns();
-      }
-      updateBadges();setSyncing(false);
-      let msg=`✅ تم استيراد ${imported} سجل`;
-      if(skipped)msg+=` — تم تخطي ${skipped} (مكرر أو ناقص)`;
-      if(failed)msg+=` — فشل ${failed}`;
-      toast(msg);
-    }catch(err){setSyncing(false);alert('خطأ في قراءة الملف: '+err.message)}
+      buildImportPreview(rows,type);
+    }catch(err){alert('خطأ في قراءة الملف: '+err.message)}
   };
   reader.readAsArrayBuffer(file);input.value='';
+}
+
+function buildImportPreview(rows,type){
+  pendingImportType=type;
+  pendingImportRows=[];
+  if(type==='staff'){
+    const knownNamesMap=new Map();
+    companiesData.forEach(c=>{if(c.name)knownNamesMap.set(normCo(c.name),c.name)});
+    staffData.forEach(s=>{if(s.company&&!knownNamesMap.has(normCo(s.company)))knownNamesMap.set(normCo(s.company),s.company)});
+    const existingKeys=new Set(staffData.map(s=>(s.company||'').trim().toLowerCase()+'|'+(s.name||'').trim().toLowerCase()+'|'+(s.passport_no||'').trim().toLowerCase()));
+    rows.forEach(row=>{
+      let rawCompany=row['Company Name']||row['الشركة']||row['02-Company']||row['company']||'';
+      const resolvedCompany=resolveCompanyName(rawCompany,knownNamesMap);
+      if(rawCompany&&!knownNamesMap.has(normCo(rawCompany)))knownNamesMap.set(normCo(rawCompany),resolvedCompany);
+      const s={
+        company:resolvedCompany,
+        name:row['Person Name']||row['الاسم']||row['03-Person Name']||row['name']||'',
+        nationality:row['Nat.']||row['الجنسية']||row['04-Nat.']||'',
+        nat_no:String(row['Nat.-No.']||''),
+        passport_no:row['Passport No.']||row['رقم الجواز']||row['06-Passport No.']||'',
+        passport_issue:fmtED(row['Passport Issues.']||row['07-Passport Issues.']),
+        passport_exp:fmtED(row['Passport Exp.']||row['انتهاء الجواز']||row['08-Passport Exp.']),
+        dob:fmtED(row['DOB']||row['09-D-M-Y']),
+        mol_no:row['MBxxxxxxAE']||row['رقم MOL']||row['10-MBxxxxxxAE']||'',
+        personal_no:String(row['Personal No.']||row['11-Personal No.']||''),
+        uid_no:String(row['UID Number']||row['12-UID Number']||''),
+        emirates_id:String(row['Emirates ID']||row['13-Emirates ID']||''),
+        eid_card:String(row['EID - Card No.']||row['14-EID - Card No.']||''),
+        lc_no:String(row['LC No.-1']||row['رقم بطاقة العمل']||row['15-LC No.-1']||''),
+        lc_exp:fmtED(row['LC Exp.-1']||row['انتهاء بطاقة العمل']||row['16-LC Exp.-1']),
+        visa_exp:fmtED(row['Visa Exp.']||row['انتهاء الإقامة']||row['17-Visa Exp.']),
+        iloe_exp:fmtED(row['ILOE']||row['انتهاء تأمين التعطل']||row['18-ILOE'])
+      };
+      let status='جديد';
+      if(!s.name||!s.company)status='ناقص';
+      else{
+        const key=s.company.trim().toLowerCase()+'|'+s.name.trim().toLowerCase()+'|'+(s.passport_no||'').trim().toLowerCase();
+        if(existingKeys.has(key))status='مكرر';
+      }
+      pendingImportRows.push({data:s,status});
+    });
+  }else if(type==='companies'){
+    const existingNorms=new Set(companiesData.map(c=>normCo(c.name)));
+    rows.forEach(row=>{
+      const c={
+        name:row['Company Name']||row['اسم الشركة']||row['name']||'',
+        license_issue:fmtED(row['إصدار الرخصة']||row['License Issue']),
+        license_exp:fmtED(row['انتهاء الرخصة']||row['License Exp']),
+        passport_card_exp:fmtED(row['انتهاء بطاقة الجوازات']||row['Passport Card Exp']),
+        lease_exp:fmtED(row['انتهاء عقد الإيجار']||row['Lease Exp']),
+        manager:row['المدير']||row['Manager']||'',
+        phone:row['التواصل']||row['Phone']||'',
+        email:row['الإيميل']||row['Email']||'',
+        address:row['العنوان']||row['Address']||''
+      };
+      let status='جديد';
+      if(!c.name)status='ناقص';
+      else if(existingNorms.has(normCo(c.name)))status='مكرر';
+      pendingImportRows.push({data:c,status});
+    });
+  }
+  renderImportPreview();
+  document.getElementById('import-review-modal').style.display='flex';
+}
+
+function renderImportPreview(){
+  const newCount=pendingImportRows.filter(r=>r.status==='جديد').length;
+  const dupCount=pendingImportRows.filter(r=>r.status==='مكرر').length;
+  const badCount=pendingImportRows.filter(r=>r.status==='ناقص').length;
+  document.getElementById('import-review-summary').innerHTML=
+    `<span class="badge b-ok">جديد: ${newCount}</span> `+
+    `<span class="badge b-3wk">مكرر (سيُتجاهل): ${dupCount}</span> `+
+    `<span class="badge b-exp">ناقص (سيُتجاهل): ${badCount}</span> `+
+    `<span class="badge b-blue">الإجمالي: ${pendingImportRows.length}</span>`;
+
+  const isStaff=pendingImportType==='staff';
+  const head=isStaff
+    ?'<tr><th>#</th><th>الحالة</th><th>الشركة</th><th>الاسم</th><th>الجنسية</th><th>رقم الجواز</th><th>انتهاء ب.عمل</th><th>انتهاء الإقامة</th></tr>'
+    :'<tr><th>#</th><th>الحالة</th><th>اسم الشركة</th><th>المدير</th><th>انتهاء الرخصة</th><th>التواصل</th></tr>';
+  document.getElementById('import-review-thead').innerHTML=head;
+
+  const stCls={'جديد':'b-ok','مكرر':'b-3wk','ناقص':'b-exp'};
+  document.getElementById('import-review-tbody').innerHTML=pendingImportRows.map((r,i)=>{
+    const st=`<span class="badge ${stCls[r.status]}">${r.status}</span>`;
+    if(isStaff){
+      return`<tr><td style="font-size:11px;color:var(--muted)">${i+1}</td><td>${st}</td><td><span class="ctag">${shortCo(r.data.company)}</span></td><td style="font-weight:700">${r.data.name||'—'}</td><td>${r.data.nationality||'—'}</td><td style="font-family:monospace;font-size:11px">${r.data.passport_no||'—'}</td><td>${r.data.lc_exp?fmtD(r.data.lc_exp):'—'}</td><td>${r.data.visa_exp?fmtD(r.data.visa_exp):'—'}</td></tr>`;
+    }else{
+      return`<tr><td style="font-size:11px;color:var(--muted)">${i+1}</td><td>${st}</td><td style="font-weight:700">${r.data.name||'—'}</td><td>${r.data.manager||'—'}</td><td>${r.data.license_exp?fmtD(r.data.license_exp):'—'}</td><td>${r.data.phone||'—'}</td></tr>`;
+    }
+  }).join('');
+}
+
+function closeImportReview(){
+  document.getElementById('import-review-modal').style.display='none';
+  pendingImportRows=[];pendingImportType=null;
+}
+
+async function confirmImportSave(){
+  const rowsToSave=pendingImportRows.filter(r=>r.status==='جديد');
+  if(!rowsToSave.length){toast('⚠️ لا توجد سجلات جديدة لحفظها');closeImportReview();return}
+  setSyncing(true);
+  let imported=0,failed=0;
+  if(pendingImportType==='staff'){
+    for(const r of rowsToSave){
+      const s={...r.data,no:staffData.length+1+imported};
+      try{
+        const res=await sb('hr_staff','POST',s);
+        staffData.push(res[0]||res);
+        imported++;
+      }catch(e){failed++}
+    }
+    const existingCoNorms=new Set(companiesData.map(c=>normCo(c.name)));
+    const newCos=[...new Set(staffData.map(s=>s.company).filter(Boolean))].filter(n=>!existingCoNorms.has(normCo(n)));
+    for(const coName of newCos){
+      try{
+        const res=await sb('hr_companies','POST',{name:coName,license_issue:null,license_exp:null,passport_card_exp:null,lease_exp:null,manager:'',phone:'',email:'',address:''});
+        companiesData.push(res[0]||res);
+        existingCoNorms.add(normCo(coName));
+      }catch(e){}
+    }
+    renderStaff();renderDashTable();renderKPIs();fillDropdowns();renderCompanies();
+  }else if(pendingImportType==='companies'){
+    for(const r of rowsToSave){
+      try{
+        const res=await sb('hr_companies','POST',r.data);
+        companiesData.push(res[0]||res);
+        imported++;
+      }catch(e){failed++}
+    }
+    renderCompanies();fillDropdowns();
+  }
+  updateBadges();setSyncing(false);
+  closeImportReview();
+  let msg=`✅ تم حفظ ${imported} سجل على السيرفر`;
+  if(failed)msg+=` — فشل ${failed}`;
+  toast(msg);
 }
 function fmtED(v){if(!v)return null;if(typeof v==='string'&&v.match(/\d{4}-\d{2}-\d{2}/))return v.substring(0,10);if(typeof v==='number'){const d=new Date((v-25569)*86400000);return d.toISOString().split('T')[0]}try{return new Date(v).toISOString().split('T')[0]}catch{return null}}
 
