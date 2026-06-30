@@ -626,6 +626,21 @@ function fmtD(d){if(!d)return'—';try{return new Date(d).toLocaleDateString('ar
 function shortCo(n){if(!n)return'';const m={'Abtal':'Abtal Al Baraiem','Al Saada For Kids':'Al Saada For Kids','Al Saada Nursery':'Al Saada Nursery','Alfarha':'Alfarha Nursery','Dolphin':'Dolphin Nursery'};for(const[k,v]of Object.entries(m))if(n.startsWith(k))return v;return n.length>22?n.slice(0,22)+'…':n}
 function toast(m){const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),3000)}
 function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2)}
+
+// Normalize a company name for fuzzy matching: lowercase, strip punctuation/extra spaces
+function normCo(name){
+  if(!name)return'';
+  return name.toString().trim().toLowerCase()
+    .replace(/[.,\-_]/g,'')
+    .replace(/\s+/g,' ')
+    .trim();
+}
+// Given a raw company name, find the canonical existing name if a close match exists
+function resolveCompanyName(rawName,knownNamesMap){
+  const norm=normCo(rawName);
+  if(knownNamesMap.has(norm))return knownNamesMap.get(norm);
+  return rawName.toString().trim();
+}
 function setSyncing(v){const dot=document.getElementById('sync-dot'),txt=document.getElementById('sync-txt');if(v){dot.className='dot syncing';txt.textContent='جاري المزامنة...'}else{dot.className='dot';txt.textContent='متصل بـ Supabase ☁️'}}
 function setErr(m){document.getElementById('sync-dot').className='dot err';document.getElementById('sync-txt').textContent=m||'خطأ'}
 
@@ -667,7 +682,10 @@ function openInvoices(page=''){
 function getCos(){
   const fromStaff=staffData.map(s=>s.company).filter(Boolean);
   const fromCompanies=companiesData.map(c=>c.name).filter(Boolean);
-  return[...new Set([...fromStaff,...fromCompanies])].sort();
+  const all=[...fromCompanies,...fromStaff]; // companies list takes priority for canonical naming
+  const seen=new Map();
+  all.forEach(n=>{const k=normCo(n);if(!seen.has(k))seen.set(k,n)});
+  return[...seen.values()].sort();
 }
 function fillDropdowns(){
   const cos=getCos();
@@ -1108,21 +1126,90 @@ function handleImport(input,type){
       const ws=wb.Sheets[wb.SheetNames[0]];
       const rows=XLSX.utils.sheet_to_json(ws,{defval:''});
       setSyncing(true);
-      let imported=0;
+      let imported=0,skipped=0,failed=0;
       if(type==='staff'){
+        // Build a set of existing (company+name+passport) to avoid duplicates
+        const existingKeys=new Set(staffData.map(s=>(s.company||'').trim().toLowerCase()+'|'+(s.name||'').trim().toLowerCase()+'|'+(s.passport_no||'').trim().toLowerCase()));
+        // Build a normalized-name -> canonical-name map from existing companies & staff
+        const knownNamesMap=new Map();
+        companiesData.forEach(c=>{if(c.name)knownNamesMap.set(normCo(c.name),c.name)});
+        staffData.forEach(s=>{if(s.company&&!knownNamesMap.has(normCo(s.company)))knownNamesMap.set(normCo(s.company),s.company)});
         for(const row of rows){
-          const s={no:staffData.length+1+imported,company:row['الشركة']||row['02-Company']||row['company']||'',name:row['الاسم']||row['03-Person Name']||row['name']||'',nationality:row['الجنسية']||row['04-Nat.']||'',passport_no:row['رقم الجواز']||row['06-Passport No.']||'',passport_issue:fmtED(row['07-Passport Issues.']),passport_exp:fmtED(row['انتهاء الجواز']||row['08-Passport Exp.']),dob:fmtED(row['09-D-M-Y']),mol_no:row['رقم MOL']||row['10-MBxxxxxxAE']||'',personal_no:String(row['11-Personal No.']||''),uid_no:String(row['12-UID Number']||''),emirates_id:String(row['13-Emirates ID']||''),eid_card:String(row['14-EID - Card No.']||''),lc_no:String(row['رقم بطاقة العمل']||row['15-LC No.-1']||''),lc_exp:fmtED(row['انتهاء بطاقة العمل']||row['16-LC Exp.-1']),visa_exp:fmtED(row['انتهاء الإقامة']||row['17-Visa Exp.']),iloe_exp:fmtED(row['انتهاء تأمين التعطل']||row['18-ILOE'])};
-          if(s.name){const r=await sb('hr_staff','POST',s);staffData.push(r[0]||r);imported++}
+          let rawCompany=row['Company Name']||row['الشركة']||row['02-Company']||row['company']||'';
+          const resolvedCompany=resolveCompanyName(rawCompany,knownNamesMap);
+          if(rawCompany&&!knownNamesMap.has(normCo(rawCompany)))knownNamesMap.set(normCo(rawCompany),resolvedCompany);
+          const s={
+            no:staffData.length+1+imported,
+            company:resolvedCompany,
+            name:row['Person Name']||row['الاسم']||row['03-Person Name']||row['name']||'',
+            nationality:row['Nat.']||row['الجنسية']||row['04-Nat.']||'',
+            nat_no:String(row['Nat.-No.']||''),
+            passport_no:row['Passport No.']||row['رقم الجواز']||row['06-Passport No.']||'',
+            passport_issue:fmtED(row['Passport Issues.']||row['07-Passport Issues.']),
+            passport_exp:fmtED(row['Passport Exp.']||row['انتهاء الجواز']||row['08-Passport Exp.']),
+            dob:fmtED(row['DOB']||row['09-D-M-Y']),
+            mol_no:row['MBxxxxxxAE']||row['رقم MOL']||row['10-MBxxxxxxAE']||'',
+            personal_no:String(row['Personal No.']||row['11-Personal No.']||''),
+            uid_no:String(row['UID Number']||row['12-UID Number']||''),
+            emirates_id:String(row['Emirates ID']||row['13-Emirates ID']||''),
+            eid_card:String(row['EID - Card No.']||row['14-EID - Card No.']||''),
+            lc_no:String(row['LC No.-1']||row['رقم بطاقة العمل']||row['15-LC No.-1']||''),
+            lc_exp:fmtED(row['LC Exp.-1']||row['انتهاء بطاقة العمل']||row['16-LC Exp.-1']),
+            visa_exp:fmtED(row['Visa Exp.']||row['انتهاء الإقامة']||row['17-Visa Exp.']),
+            iloe_exp:fmtED(row['ILOE']||row['انتهاء تأمين التعطل']||row['18-ILOE'])
+          };
+          if(!s.name||!s.company){skipped++;continue}
+          const key=s.company.trim().toLowerCase()+'|'+s.name.trim().toLowerCase()+'|'+(s.passport_no||'').trim().toLowerCase();
+          if(existingKeys.has(key)){skipped++;continue}
+          try{
+            const r=await sb('hr_staff','POST',s);
+            staffData.push(r[0]||r);
+            existingKeys.add(key);
+            imported++;
+          }catch(rowErr){failed++}
         }
-        renderStaff();renderDashTable();renderKPIs();fillDropdowns();
+        // Auto-create any companies mentioned in the staff file but not yet registered
+        const existingCoNorms=new Set(companiesData.map(c=>normCo(c.name)));
+        const newCos=[...new Set(staffData.map(s=>s.company).filter(Boolean))].filter(n=>!existingCoNorms.has(normCo(n)));
+        for(const coName of newCos){
+          try{
+            const r=await sb('hr_companies','POST',{name:coName,license_issue:null,license_exp:null,passport_card_exp:null,lease_exp:null,manager:'',phone:'',email:'',address:''});
+            companiesData.push(r[0]||r);
+            existingCoNorms.add(normCo(coName));
+          }catch(coErr){}
+        }
+        renderStaff();renderDashTable();renderKPIs();fillDropdowns();renderCompanies();
       }else if(type==='companies'){
+        const existingNames=new Set(companiesData.map(c=>(c.name||'').trim().toLowerCase()));
         for(const row of rows){
-          const c={name:row['اسم الشركة']||row['name']||'',license_issue:fmtED(row['إصدار الرخصة']),license_exp:fmtED(row['انتهاء الرخصة']),passport_card_exp:fmtED(row['انتهاء بطاقة الجوازات']),lease_exp:fmtED(row['انتهاء عقد الإيجار']),manager:row['المدير']||'',phone:row['التواصل']||'',email:row['الإيميل']||'',address:row['العنوان']||''};
-          if(c.name){const r=await sb('hr_companies','POST',c);companiesData.push(r[0]||r);imported++}
+          const c={
+            name:row['Company Name']||row['اسم الشركة']||row['name']||'',
+            license_issue:fmtED(row['إصدار الرخصة']||row['License Issue']),
+            license_exp:fmtED(row['انتهاء الرخصة']||row['License Exp']),
+            passport_card_exp:fmtED(row['انتهاء بطاقة الجوازات']||row['Passport Card Exp']),
+            lease_exp:fmtED(row['انتهاء عقد الإيجار']||row['Lease Exp']),
+            manager:row['المدير']||row['Manager']||'',
+            phone:row['التواصل']||row['Phone']||'',
+            email:row['الإيميل']||row['Email']||'',
+            address:row['العنوان']||row['Address']||''
+          };
+          if(!c.name){skipped++;continue}
+          const key=c.name.trim().toLowerCase();
+          if(existingNames.has(key)){skipped++;continue}
+          try{
+            const r=await sb('hr_companies','POST',c);
+            companiesData.push(r[0]||r);
+            existingNames.add(key);
+            imported++;
+          }catch(rowErr){failed++}
         }
         renderCompanies();fillDropdowns();
       }
-      updateBadges();setSyncing(false);toast(`✅ تم استيراد ${imported} سجل`);
+      updateBadges();setSyncing(false);
+      let msg=`✅ تم استيراد ${imported} سجل`;
+      if(skipped)msg+=` — تم تخطي ${skipped} (مكرر أو ناقص)`;
+      if(failed)msg+=` — فشل ${failed}`;
+      toast(msg);
     }catch(err){setSyncing(false);alert('خطأ في قراءة الملف: '+err.message)}
   };
   reader.readAsArrayBuffer(file);input.value='';
