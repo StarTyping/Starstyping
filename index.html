@@ -223,6 +223,10 @@ input:focus,select:focus{border-color:var(--gold);box-shadow:0 0 0 3px rgba(201,
     <div class="nav-item" onclick="showSec('import-export')">
       <span class="nav-icon">🔄</span> Import / Export
     </div>
+    <div class="nav-item" onclick="showSec('duplicates');findDuplicates()">
+      <span class="nav-icon">🧹</span> فحص التكرار
+      <span class="nav-badge" id="badge-dup" style="display:none">0</span>
+    </div>
   </div>
   <div class="sidebar-footer">نجم المشرق © 2026 — الإمارات</div>
 </nav>
@@ -522,6 +526,16 @@ input:focus,select:focus{border-color:var(--gold);box-shadow:0 0 0 3px rgba(201,
       </div>
     </div>
 
+    <!-- ===== DUPLICATES TOOL ===== -->
+    <div id="sec-duplicates" class="section">
+      <div class="sec-title">🧹 فحص وحذف الموظفين المكررين</div>
+      <p style="font-size:13px;color:var(--muted);margin-bottom:18px">يتم اعتبار الموظف "مكرر" عندما يتطابق <strong>الاسم الكامل ورقم جواز السفر</strong> بالضبط مع موظف آخر. راجعي القائمة واختاري أي نسخة تريدين حذفها.</p>
+      <div class="btn-group">
+        <button class="btn btn-navy" onclick="findDuplicates()">🔍 إعادة الفحص</button>
+      </div>
+      <div id="dup-results"></div>
+    </div>
+
   </div><!-- /content -->
 </div><!-- /main -->
 
@@ -685,7 +699,7 @@ async function loadAll(){
 async function syncAll(){setSyncing(true);await loadAll();renderAll();toast('✅ تم المزامنة');setSyncing(false)}
 
 // ===== NAV =====
-const SEC_TITLES={'dashboard':'لوحة التحكم الرئيسية','companies':'الشركات','staff':'كل الموظفين — القسم الأول','pending':'المعاملات الجارية — القسم الثاني','completed':'المنجز والتحديث — القسم الثالث','cancelled':'الملغيين — القسم الرابع','newstaff':'موظفين جدد — القسم الخامس','templates':'Templates — قوالب جاهزة','import-export':'Import / Export'};
+const SEC_TITLES={'dashboard':'لوحة التحكم الرئيسية','companies':'الشركات','staff':'كل الموظفين — القسم الأول','pending':'المعاملات الجارية — القسم الثاني','completed':'المنجز والتحديث — القسم الثالث','cancelled':'الملغيين — القسم الرابع','newstaff':'موظفين جدد — القسم الخامس','templates':'Templates — قوالب جاهزة','import-export':'Import / Export','duplicates':'فحص وحذف التكرار'};
 function showSec(id){
   document.querySelectorAll('.section').forEach(s=>s.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
@@ -995,8 +1009,30 @@ function clearSF(){['sf-co','sf-name','sf-nat','sf-pp','sf-pp-issue','sf-pp-exp'
 function fillSF(s){const m={'sf-co':s.company,'sf-name':s.name,'sf-nat':s.nationality,'sf-pp':s.passport_no,'sf-pp-issue':s.passport_issue,'sf-pp-exp':s.passport_exp,'sf-dob':s.dob,'sf-mol':s.mol_no,'sf-pno':s.personal_no,'sf-eid':s.emirates_id,'sf-lc-no':s.lc_no,'sf-lc-exp':s.lc_exp,'sf-visa':s.visa_exp,'sf-iloe':s.iloe_exp};for(const[id,v]of Object.entries(m)){const e=document.getElementById(id);if(e)e.value=v||''}}
 function getSF(){let co=document.getElementById('sf-co').value;if(co==='__new__')co=prompt('اكتب اسم الشركة الجديدة:')||'';return{company:co,name:document.getElementById('sf-name').value,nationality:document.getElementById('sf-nat').value,passport_no:document.getElementById('sf-pp').value,passport_issue:document.getElementById('sf-pp-issue').value||null,passport_exp:document.getElementById('sf-pp-exp').value||null,dob:document.getElementById('sf-dob').value||null,mol_no:document.getElementById('sf-mol').value,personal_no:document.getElementById('sf-pno').value,emirates_id:document.getElementById('sf-eid').value,lc_no:document.getElementById('sf-lc-no').value,lc_exp:document.getElementById('sf-lc-exp').value||null,visa_exp:document.getElementById('sf-visa').value||null,iloe_exp:document.getElementById('sf-iloe').value||null}}
 
+// Check if a staff member with the same name AND passport number already exists
+// (excluding the record currently being edited, if any)
+function isDuplicateStaff(name,passportNo,excludeId){
+  const n=(name||'').trim().toLowerCase();
+  const p=(passportNo||'').trim().toLowerCase();
+  if(!n)return false;
+  return staffData.some(s=>{
+    if(excludeId&&s.id==excludeId)return false;
+    const sn=(s.name||'').trim().toLowerCase();
+    const sp=(s.passport_no||'').trim().toLowerCase();
+    // Duplicate if same name AND same passport (when both have a passport on record)
+    if(sn===n&&p&&sp&&sp===p)return true;
+    return false;
+  });
+}
+
 async function saveStaff(){
   const d=getSF();if(!d.company||!d.name){alert('الشركة والاسم مطلوبان');return}
+  if(editStaffTarget==='staff'){
+    if(isDuplicateStaff(d.name,d.passport_no,editStaffId)){
+      alert('⚠️ يوجد موظف مسجل بالفعل بنفس الاسم ونفس رقم الجواز.\nلن يتم حفظ هذا الإدخال لمنع التكرار.');
+      return;
+    }
+  }
   setSyncing(true);
   try{
     if(editStaffTarget==='newstaff'){
@@ -1162,7 +1198,9 @@ function buildImportPreview(rows,type){
     const knownNamesMap=new Map();
     companiesData.forEach(c=>{if(c.name)knownNamesMap.set(normCo(c.name),c.name)});
     staffData.forEach(s=>{if(s.company&&!knownNamesMap.has(normCo(s.company)))knownNamesMap.set(normCo(s.company),s.company)});
-    const existingKeys=new Set(staffData.map(s=>(s.company||'').trim().toLowerCase()+'|'+(s.name||'').trim().toLowerCase()+'|'+(s.passport_no||'').trim().toLowerCase()));
+    // Duplicate key = name + passport number ONLY (per request: same name + same passport = reject)
+    const existingKeys=new Set(staffData.map(s=>(s.name||'').trim().toLowerCase()+'|'+(s.passport_no||'').trim().toLowerCase()));
+    const seenInBatch=new Set();
     rows.forEach(row=>{
       let rawCompany=row['Company Name']||row['الشركة']||row['02-Company']||row['company']||'';
       const resolvedCompany=resolveCompanyName(rawCompany,knownNamesMap);
@@ -1189,8 +1227,9 @@ function buildImportPreview(rows,type){
       let status='جديد';
       if(!s.name||!s.company)status='ناقص';
       else{
-        const key=s.company.trim().toLowerCase()+'|'+s.name.trim().toLowerCase()+'|'+(s.passport_no||'').trim().toLowerCase();
-        if(existingKeys.has(key))status='مكرر';
+        const key=s.name.trim().toLowerCase()+'|'+(s.passport_no||'').trim().toLowerCase();
+        if(existingKeys.has(key)||seenInBatch.has(key))status='مكرر';
+        else seenInBatch.add(key);
       }
       pendingImportRows.push({data:s,status});
     });
@@ -1357,8 +1396,80 @@ function downloadTemplate(type){
   const wb=XLSX.utils.book_new();const ws=XLSX.utils.aoa_to_sheet([headers,headers.map(()=>'')]);ws['!cols']=Array(headers.length).fill({wch:20});XLSX.utils.book_append_sheet(wb,ws,'Template');XLSX.writeFile(wb,`نجم_المشرق_${filename}.xlsx`);toast('✅ تم تحميل القالب');
 }
 
-// ===== RENDER ALL =====
-function renderAll(){fillDropdowns();updateBadges();renderKPIs();renderDashTable();renderInvSummary();renderStaff();renderPending();renderCompleted();renderCancelled();renderNewStaff();renderCompanies()}
+// ===== DUPLICATES TOOL =====
+function findDuplicates(){
+  const groups=new Map();
+  staffData.forEach(s=>{
+    const key=(s.name||'').trim().toLowerCase()+'|'+(s.passport_no||'').trim().toLowerCase();
+    if(!s.name)return;
+    if(!groups.has(key))groups.set(key,[]);
+    groups.get(key).push(s);
+  });
+  const dupGroups=[...groups.values()].filter(g=>g.length>1);
+
+  const dupBadgeEl=document.getElementById('badge-dup');
+  if(dupBadgeEl){
+    const total=dupGroups.reduce((sum,g)=>sum+g.length,0);
+    dupBadgeEl.textContent=total;
+    dupBadgeEl.style.display=total?'inline-block':'none';
+  }
+
+  const wrap=document.getElementById('dup-results');
+  if(!wrap)return;
+  if(!dupGroups.length){
+    wrap.innerHTML='<div class="empty"><div class="ei">✅</div><p>لا يوجد أي موظف مكرر — كل البيانات نظيفة</p></div>';
+    return;
+  }
+  wrap.innerHTML=dupGroups.map((g,gi)=>`
+    <div class="table-wrap" style="margin-bottom:18px">
+      <div style="padding:12px 16px;background:rgba(230,57,70,.08);border-bottom:1px solid var(--gray);font-weight:700;color:var(--red)">
+        ⚠️ مجموعة مكررة #${gi+1}: ${g[0].name} (${g.length} نسخ)
+      </div>
+      <table>
+        <thead><tr><th>إبقاء</th><th>الشركة</th><th>رقم الجواز</th><th>انتهاء ب.عمل</th><th>انتهاء الإقامة</th><th>تاريخ الإضافة</th><th>حذف هذه النسخة</th></tr></thead>
+        <tbody>
+          ${g.map(s=>`<tr>
+            <td><input type="radio" name="keep-${gi}" ${s===g[0]?'checked':''} disabled style="width:16px;height:16px"></td>
+            <td><span class="ctag">${shortCo(s.company)}</span></td>
+            <td style="font-family:monospace;font-size:11px">${s.passport_no||'—'}</td>
+            <td>${badge(s.lc_exp)}</td>
+            <td>${badge(s.visa_exp)}</td>
+            <td style="font-size:11px;color:var(--muted)">${fmtD(s.created_at)}</td>
+            <td><button class="btn btn-sm btn-danger" onclick="deleteDuplicateStaff('${s.id}')">🗑️ حذف</button></td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>
+  `).join('');
+}
+
+async function deleteDuplicateStaff(id){
+  const s=staffData.find(x=>x.id==id);if(!s)return;
+  if(!confirm(`حذف "${s.name}" (${s.company}) نهائياً من قاعدة البيانات؟\nهذا الإجراء لا يمكن التراجع عنه.`))return;
+  setSyncing(true);
+  try{
+    await sb('hr_staff?id=eq.'+id,'DELETE');
+    staffData=staffData.filter(x=>x.id!=id);
+    renderStaff();renderDashTable();renderKPIs();updateBadges();
+    findDuplicates();
+    setSyncing(false);
+    toast('🗑️ تم حذف السجل المكرر');
+  }catch(e){setErr('خطأ: '+e.message)}
+}
+
+
+function renderAll(){fillDropdowns();updateBadges();renderKPIs();renderDashTable();renderInvSummary();renderStaff();renderPending();renderCompleted();renderCancelled();renderNewStaff();renderCompanies();updateDupBadgeOnly()}
+function updateDupBadgeOnly(){
+  const groups=new Map();
+  staffData.forEach(s=>{
+    if(!s.name)return;
+    const key=(s.name||'').trim().toLowerCase()+'|'+(s.passport_no||'').trim().toLowerCase();
+    groups.set(key,(groups.get(key)||0)+1);
+  });
+  const total=[...groups.values()].filter(c=>c>1).reduce((a,b)=>a+b,0);
+  const dupBadgeEl=document.getElementById('badge-dup');
+  if(dupBadgeEl){dupBadgeEl.textContent=total;dupBadgeEl.style.display=total?'inline-block':'none'}
+}
 
 // ===== INIT =====
 async function init(){
