@@ -664,7 +664,11 @@ function openInvoices(page=''){
 }
 
 // ===== DROPDOWNS =====
-function getCos(){return[...new Set(staffData.map(s=>s.company).filter(Boolean))].sort()}
+function getCos(){
+  const fromStaff=staffData.map(s=>s.company).filter(Boolean);
+  const fromCompanies=companiesData.map(c=>c.name).filter(Boolean);
+  return[...new Set([...fromStaff,...fromCompanies])].sort();
+}
 function fillDropdowns(){
   const cos=getCos();
   ['dash-co','staff-co','pend-co'].forEach(id=>{
@@ -912,6 +916,7 @@ function renderCompanies(){
       <div style="display:flex;gap:8px">
         <button class="btn btn-sm btn-gold" onclick="editComp('${c.id}')">✏️ تعديل</button>
         <button class="btn btn-sm btn-outline" onclick="viewCoStaff('${c.name}')">👥 الموظفين</button>
+        <button class="btn btn-sm" style="background:#2D6A4F;color:#fff" onclick="openStaffModal('staff','${c.name.replace(/'/g,"\\'")}')">➕ موظف</button>
         <button class="btn btn-sm btn-danger" onclick="delComp('${c.id}')">🗑️</button>
       </div>
     </div>`;
@@ -942,7 +947,7 @@ function renderPag(data,tbId,pgId,key,rowFn){
 function chPg(k,p2){pg[k]=p2;if(k==='dash')renderDashTable();else if(k==='staff')renderStaff();else if(k==='pending')renderPending()}
 
 // ===== STAFF MODAL =====
-function openStaffModal(target){editStaffId=null;editStaffTarget=target||'staff';document.getElementById('sm-title').textContent='إضافة موظف جديد';document.getElementById('sm-icon').textContent='➕';clearSF();document.getElementById('staff-modal').style.display='flex'}
+function openStaffModal(target,presetCompany){editStaffId=null;editStaffTarget=target||'staff';document.getElementById('sm-title').textContent='إضافة موظف جديد';document.getElementById('sm-icon').textContent='➕';clearSF();fillDropdowns();if(presetCompany)document.getElementById('sf-co').value=presetCompany;document.getElementById('staff-modal').style.display='flex'}
 function editStaff(id){const s=staffData.find(x=>x.id==id);if(!s)return;editStaffId=id;editStaffTarget='staff';document.getElementById('sm-title').textContent='تعديل بيانات موظف';fillSF(s);document.getElementById('staff-modal').style.display='flex'}
 function editNewStaff(id){const s=newStaffData.find(x=>x.id==id);if(!s)return;editStaffId=id;editStaffTarget='newstaff';document.getElementById('sm-title').textContent='تعديل موظف جديد';fillSF(s);document.getElementById('staff-modal').style.display='flex'}
 function editStaffFromComp(id){const c=completedData.find(x=>x.id==id);if(!c)return;editStaffId=id;editStaffTarget='completed';fillSF(c);document.getElementById('staff-modal').style.display='flex'}
